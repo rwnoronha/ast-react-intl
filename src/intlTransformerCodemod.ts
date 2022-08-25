@@ -55,7 +55,7 @@ const collapseInternalSpace = (str: string) => str.replace(/\s+/g, ' ')
 
 const canHandleAttribute = (attr: JSXAttribute) => {
   const localizationPropNames = [ /defaultMessage/, /description/, /values/ ];
-  const infraPropNames = [ /style/, /href/, /type/ ];
+  const infraPropNames = [ /style/, /href/, /type/, /test/i ];
   const ignorePropNames = [...localizationPropNames, ...infraPropNames]
   if(ignorePropNames.some(r => r.test(attr.value.name.name))) {
      return false;
@@ -69,13 +69,13 @@ const canHandleAttribute = (attr: JSXAttribute) => {
   return true;
 }
 const looksLikeText = (attr: JSXAttribute) => {
-  const usuallyTextPropNames = [ /placeholder/, /text/, /message/ ];
+  const usuallyTextPropNames = [ /placeholder/, /text/, /message/, /cta/i, /msg/i ];
   if(usuallyTextPropNames.some((regex) => regex.test(attr.value.name.name))) {
      return true;
   }
   
   // Stuff that contains spaces is usually something that needs to be translated
-  if(attr.value && attr.value.value && / /.test(attr.value.value)) {
+  if(attr.value && attr.value.value && / /.test(attr.value.value.value.trim())) {
     return true;
   }
   
