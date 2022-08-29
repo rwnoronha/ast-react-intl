@@ -1,5 +1,5 @@
 import { NodePath } from "@babel/traverse";
-import { API, FileInfo, ImportDeclaration, JSCodeshift, JSXAttribute, JSXElement, JSXExpressionContainer, JSXText, Options, Property } from "jscodeshift";
+import { API, Expression, FileInfo, ImportDeclaration, JSCodeshift, JSXAttribute, JSXElement, JSXExpressionContainer, JSXText, Options, Property } from "jscodeshift";
 import { Collection } from "jscodeshift/src/Collection";
 
 const getImportStatement = () => {
@@ -62,7 +62,7 @@ const canHandleAttribute = (attr: JSXAttribute) => {
   }
   
   // Support for JSX expressions isn't in yet
-  if(attr?.value?.value?.type === "JSXExpressionContainer") {
+  if(attr.value.value.type === "JSXExpressionContainer") {
     return false;
   }
   
@@ -82,7 +82,7 @@ const looksLikeText = (attr: JSXAttribute) => {
   return false;
 }
 
-const generateArgName = (expression: JSXExpressionContainer, idx: number): string => {
+const generateArgName = (expression: Expression, idx: number): string => {
   if(expression.type === "Identifier") {
     return expression.name;
   } else if (expression.type === "MemberExpression") {
@@ -138,6 +138,41 @@ const getTextWithPlaceholders = (j: JSCodeshift, children: any[]): [string, Prop
   
 }
 
+function generateFormattedMessage(j: JSCodeshift, text: string, values: Property[]) {
+  const formatAttributes = [j.jsxAttribute(j.jsxIdentifier("defaultMessage"),
+                                           j.literal(text))];
+  if (values && values.length) {
+    formatAttributes.push(j.jsxAttribute(j.jsxIdentifier("values"), 
+                                         j.jsxExpressionContainer(
+      										j.objectExpression(values))));
+  }
+
+  return j.jsxElement(
+    j.jsxOpeningElement(j.jsxIdentifier("FormattedMessage"),
+                              formatAttributes));
+}
+
+function generateIntlCall(j: JSCodeshift, text: string, values: Property[]) {
+  const intlCallParams = [];
+  intlCallParams.push(
+    j.objectExpression([
+      j.property("init", j.identifier("defaultMessage"), j.literal(text))
+    ])
+  );
+  if(values && values.length) {
+  	intlCallParams.push(j.objectExpression(values));
+  }
+  return j.callExpression(
+    	j.memberExpression(
+                j.identifier("intl"),
+                j.identifier("formatMessage"),
+                false
+              ),
+              
+              intlCallParams
+            );
+}
+
 //<span>test</span>
 function translateJsxContent(j: JSCodeshift, root: Collection<any>) {
   let usedTranslation = false;
@@ -147,17 +182,7 @@ function translateJsxContent(j: JSCodeshift, root: Collection<any>) {
         usedTranslation = true;
         const oldChildren = path.parent.node.children;
         const [newText, newValues] = getTextWithPlaceholders(j, oldChildren);
-        const formatAttributes = [j.jsxAttribute(j.jsxIdentifier("defaultMessage"),
-                                                  j.literal(newText))];
-        if (newValues.length) {
-            formatAttributes.push(j.jsxAttribute(j.jsxIdentifier("values"), 
-                                                j.jsxExpressionContainer(
-              j.objectExpression(newValues))));
-          }
-
-        path.parent.node.children = [j.jsxElement(
-              j.jsxOpeningElement(j.jsxIdentifier("FormattedMessage"),
-                              formatAttributes))];
+	    path.parent.node.children = [j.jsxExpressionContainer(generateIntlCall(j, newText, newValues))];
       });
   return usedTranslation;
 }
@@ -172,19 +197,7 @@ function translateJsxAttributes(j: JSCodeshift, root: Collection<any>) {
             return;
           }
     		usedTranslation = true;
-    	  const callExpression = j.jsxExpressionContainer(
-            j.callExpression(
-              j.memberExpression(
-                j.identifier("intl"),
-                j.identifier("formatMessage"),
-                false
-              ),
-              
-              [j.objectExpression([
-                j.property("init", j.identifier("defaultMessage"), j.literal(text))
-              ])]
-            )
-          )
+    	  const callExpression = j.jsxExpressionContainer(generateIntlCall(j, text, params))
               
     	  path.value.value = callExpression;
   		})
