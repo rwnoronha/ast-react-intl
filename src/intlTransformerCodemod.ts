@@ -43,6 +43,7 @@ function transform(file: FileInfo, api: API, options: Options) {
 
   hasI18nUsage = translateJsxAttributes(j, root) || hasI18nUsage;
   hasI18nUsage = translateJsxContent(j, root) || hasI18nUsage;
+  hasI18nUsage = translatePropObjects(j, root) || hasI18nUsage;
 
   if (hasI18nUsage) {
     addI18nImport(j, root);
@@ -53,33 +54,90 @@ function transform(file: FileInfo, api: API, options: Options) {
 const isWhitespace = (str: string) => str.trim().length === 0
 const collapseInternalSpace = (str: string) => str.replace(/\s+/g, ' ')
 
-const canHandleAttribute = (attr: JSXAttribute) => {
+const hasObjectExpression = (container: JSXExpressionContainer) => {
+  return container && 
+    container.value &&
+    container.value.expression && 
+    container.value.expression.type === "ObjectExpression";
+}
+
+const canHandlePropName = (name: String) => {
   const localizationPropNames = [ /defaultMessage/, /description/, /values/ ];
-  const infraPropNames = [ /style/, /href/, /type/, /test/i ];
+  const infraPropNames = [ /style/, /href/, /type/, /test/i, /textContentType/ ];
   const ignorePropNames = [...localizationPropNames, ...infraPropNames]
-  if(ignorePropNames.some(r => r.test(attr.value.name.name))) {
+  if(ignorePropNames.some(r => r.test(name))) {
+     return false;
+  }
+  
+  return true;
+}
+
+const canHandleAttribute = (attr: JSXAttribute) => {
+  if(!canHandlePropName(attr.value.name.name)) {
      return false;
   }
   
   // Support for JSX expressions isn't in yet
-  if(attr.value.value.type === "JSXExpressionContainer") {
+  if(attr && attr.value && attr.value.value && attr.value.value.type === "JSXExpressionContainer") {
     return false;
   }
   
   return true;
 }
-const looksLikeText = (attr: JSXAttribute) => {
-  const usuallyTextPropNames = [ /placeholder/, /text/, /message/, /cta/i, /msg/i ];
-  if(usuallyTextPropNames.some((regex) => regex.test(attr.value.name.name))) {
-     return true;
+
+const looksLikeTextString = (str: string) => {
+  if(!str || !str.trim) {
+    return false;
+  }
+  const trimmed = str.trim();
+  // Stuff that contains spaces is usually something that needs to be translated
+  if(/ /.test(trimmed)) {
+    return true;
+  }
+
+  // If it's all lower case it probably shouldn't be translated
+  if(/^[a-z]+$/.test(trimmed)) {
+    return false;
+  }
+
+  // If it's camel case (has a lower case letter followed by an upper case letter), same
+  if(/[a-z][A-Z]/.test(trimmed)) {
+    return false;
+  }
+  return false;
+}
+
+const looksLikeTextPropName = (name: string) => {
+  if(!name || !name.trim) {
+    return false;
   }
   
-  // Stuff that contains spaces is usually something that needs to be translated
-  if(attr.value && attr.value.value && / /.test(attr.value.value.value.trim())) {
+  const trimmed = name.trim();
+  const usuallyTextPropNames = [ /placeholder/, /text/, /message/, /cta/i, /msg/i ];
+  if(usuallyTextPropNames.some((regex) => regex.test(trimmed))) {
+    return true;
+ }
+
+ return false;
+}
+
+const looksLikeText = (propName: string, propValue: string) => {
+  if (looksLikeTextPropName(propName)) {
+    return true;
+  }
+
+  if(looksLikeTextString(propValue)) {
     return true;
   }
   
   return false;
+}
+
+const attributeLooksLikeText = (attr: JSXAttribute) => {
+  if(!attr || !attr.value || !attr.value.name.name || !attr.value.value) {
+    return false;
+  }
+  return looksLikeText(attr.value.name.name, attr.value.value.value);
 }
 
 const generateArgName = (expression: Expression, idx: number): string => {
@@ -156,7 +214,8 @@ function generateIntlCall(j: JSCodeshift, text: string, values: Property[]) {
   const intlCallParams = [];
   intlCallParams.push(
     j.objectExpression([
-      j.property("init", j.identifier("defaultMessage"), j.literal(text))
+      j.property("init", j.identifier("defaultMessage"), j.literal(text)),
+      j.property("init", j.identifier("description"), j.literal("DESCRIBE_ABOVE_TEXT_HERE"))
     ])
   );
   if(values && values.length) {
@@ -190,16 +249,47 @@ function translateJsxContent(j: JSCodeshift, root: Collection<any>) {
 function translateJsxAttributes(j: JSCodeshift, root: Collection<any>) {
   let usedTranslation = false;
   root.find(j.JSXAttribute)
-  		.filter((path: JSXAttribute) => canHandleAttribute(path) && looksLikeText(path))
+  		.filter((path: JSXAttribute) => canHandleAttribute(path) && attributeLooksLikeText(path))
   		.forEach((path: JSXAttribute) => {
     	  const [text, params] = getTextWithPlaceholders(j, [path.value.value]);
           if ((text || "").trim().length === 0) {
             return;
           }
-    		usedTranslation = true;
+    	  
+    	  usedTranslation = true;
     	  const callExpression = j.jsxExpressionContainer(generateIntlCall(j, text, params))
               
     	  path.value.value = callExpression;
+  		})
+  
+  return usedTranslation;
+  
+}
+
+function translatePropObjects(j: JSCodeshift, root: Collection<any>) {
+  let usedTranslation = false;
+  root.find(j.JSXAttribute)
+  		.filter((path: JSXAttribute) => hasObjectExpression(path.value))
+  		.forEach((path: JSXAttribute) => {
+    	  const props = path.value.value.expression.properties;
+    	  for(let i = 0; i < props.length; i++) {
+            if(!canHandlePropName(props[i].key.name)) {
+              continue;
+            }
+
+            if(!looksLikeText(props[i].key.name, props[i].value.value)) {
+              continue;
+            }
+            
+            const [text, params] = getTextWithPlaceholders(j, [props[i].value]);
+            if ((text || "").trim().length === 0) {
+              continue;
+            }
+            usedTranslation = true;
+            const callExpression = generateIntlCall(j, text, params)
+            props[i].value = callExpression;
+            
+          }
   		})
   
   return usedTranslation;
